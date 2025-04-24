@@ -1,0 +1,217 @@
+import sys
+import math
+import rclpy
+from rclpy.node import Node
+from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtGui import QPainter, QColor, QPen
+from PyQt6.QtCore import QTimer, Qt
+from distance_msg.msg import Distance
+
+
+class MotorSubscriber(Node):
+    def __init__(self):
+        super().__init__('motor_subscriber')
+        self.readings = {}
+
+        # tworzymy subscriber czytający temat 'distance_sensors'
+        self.subscription = self.create_subscription(
+            Distance,
+            'distance_sensors',
+            self.listener_callback,
+            10)
+        self.subscription
+
+    def listener_callback(self, msg):
+        # odczytujemy dane z czujnika
+        self.readings[int(msg.direction)] = msg.distance
+        #self.get_logger().info('Azymut: "%s", Odleglosc: "%s"' % (msg.direction, msg.distance))
+
+class DistanceGUI(QWidget):
+    def __init__(self, ros_node):
+        super().__init__()
+        self.setWindowTitle("Czujniki odleglosci GUI")
+        self.resize(1000, 800)
+        self.ros_node = ros_node
+        self.motor_powers = {0: 0, 90: 0, 180: 0, 270: 0}
+
+        # Timer do odświeżania GUI
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.update)
+        self.timer.start(100)
+
+    def paintEvent(self, event):
+        # obliczamy moc silników
+        self.calculate_motor_powers()
+        
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        width = self.width()
+        height = self.height()
+        center_x = width // 2
+        center_y = height // 2
+        scale = 2  # 1 cm = 2 px
+
+        # Rysujemy pojazd jako prostokąt
+        painter.setBrush(QColor("gray"))
+        painter.drawRect(center_x - 10, center_y - 20, 20, 40)
+
+        # Silniki – azymuty: 0 (prawo), 90 (góra), 180 (lewo), 270 (dół)
+        motor_positions = {
+            0:   (center_x + 25, center_y),
+            90:    (center_x, center_y - 35),
+            180:  (center_x - 25, center_y),
+            270:  (center_x, center_y + 35),
+        }
+
+        motor_radius = 10
+
+        # rysujemy silniki
+        for direction, (x, y) in motor_positions.items():
+            power = self.motor_powers.get(direction, 0)
+            color = QColor("green") if power > 0 else QColor("red")
+
+            # Okrąg
+            painter.setBrush(color)
+            painter.setPen(Qt.GlobalColor.white)
+            painter.drawEllipse(x - motor_radius, y - motor_radius, 2 * motor_radius, 2 * motor_radius)
+
+            # Etykieta z mocą
+            painter.setPen(Qt.GlobalColor.white)
+            if direction == 0:  # prawo
+                text_x = x + motor_radius + 5
+                text_y = y + 5
+            elif direction == 180:  # lewo
+                text_x = x - motor_radius - 30
+                text_y = y + 5
+            elif direction == 90:  # góra
+                text_x = x - 10
+                text_y = y - motor_radius - 5
+            elif direction == 270:  # dół
+                text_x = x - 10
+                text_y = y + motor_radius + 15
+            else:
+                text_x = x + 12
+                text_y = y + 5
+
+            painter.drawText(text_x, text_y, f"{int(power)}%")
+
+        # Rysujemy linie dla każdego pomiaru
+        pen = QPen(QColor("red"))
+        pen.setWidth(2)
+        painter.setPen(pen)
+
+        self.obstacle_threshold_critical = 50 # w cm
+        self.obstacle_threshold = 100 # w cm
+
+        for direction, distance in self.ros_node.readings.items():
+            angle_rad = math.radians(direction)
+            dx = math.cos(angle_rad) * distance * scale
+            dy = -math.sin(angle_rad) * distance * scale  # "-" bo oś Y w GUI jest odwrotna
+
+            # Zmieniamy kolor linii jeśli przeszkoda jest blisko
+            if distance < self.obstacle_threshold_critical:
+                pen.setColor(QColor("red"))
+            elif distance < self.obstacle_threshold:
+                pen.setColor(QColor("yellow"))
+            else:
+                pen.setColor(QColor("green"))
+
+            painter.setPen(pen)
+            end_x = int(center_x + dx)
+            end_y = int(center_y + dy)
+
+            painter.drawLine(center_x, center_y, end_x, end_y)
+            painter.setPen(QColor("white"))
+            painter.drawText(end_x, end_y, f"{distance:.2f} cm")
+
+        # Legenda w prawym dolnym rogu
+        legend_x = self.width() - 270
+        legend_y = self.height() - 100
+        legend_spacing = 20
+
+        legend_items = [
+            ("< 0.5 m - STREFA KRYTYCZNA", QColor("red")),
+            ("0.5–1.0 m - STREFA OSTRZEG.", QColor("orange")),
+            (">= 1.0 m - STREFA BEZPIECZNA", QColor("green")),
+        ]
+
+        painter.setPen(Qt.GlobalColor.white)
+        painter.drawText(legend_x, legend_y - 20, "LEGENDA:")
+
+        for i, (text, color) in enumerate(legend_items):
+            y = legend_y + i * legend_spacing
+            painter.setBrush(color)
+            painter.drawRect(legend_x, y, 15, 15)
+            painter.setPen(Qt.GlobalColor.white)
+            painter.drawText(legend_x + 20, y + 12, text)
+
+        # Tabela odczytów w lewym górnym rogu
+        table_x = 20
+        table_y = 40
+        row_height = 20
+
+        painter.setPen(Qt.GlobalColor.white)
+        painter.drawText(table_x, table_y - 20, "AKTUALNE ODCZYTY CZUJNIKÓW:")
+
+        sorted_readings = sorted(self.ros_node.readings.items())  # Sortuj po azymucie
+        for i, (direction, distance) in enumerate(sorted_readings):
+            text = f"Azymut: {direction}°   Odległość: {distance:.2f} cm"
+            painter.drawText(table_x, table_y + i * row_height, text)
+
+    def calculate_motor_powers(self):
+        """
+        Wylicza moc każdego z 4 silników (azymuty 0, 90, 180, 270)
+        na podstawie aktualnych odczytów z czujników.
+        """
+        # Reset mocy silników
+        motor_power = {0: 0.0, 90: 0.0, 180: 0.0, 270: 0.0}
+
+        for direction, distance in self.ros_node.readings.items():
+            if distance > 100:
+                continue  # tylko reagujemy na bliskie przeszkody
+
+            # Znajdujemy dwa najbliższe silniki
+            for motor_dir in motor_power.keys():
+                # Obliczamy różnicę kątów (w stopniach, cyklicznie)
+                diff = abs((direction - motor_dir + 180) % 360 - 180)
+
+                if diff <= 90:
+                    # Silniki w zakresie 90° dostają udział mocy
+                    # Im mniejsza różnica kątów, tym większy udział
+                    weight = (90 - diff) / 90.0
+                    # Im bliżej przeszkoda, tym większa moc (maks. 100%)
+                    strength = max(0.0, 100 - distance)
+                    motor_power[motor_dir] += weight * strength
+
+        # Ogranicz do 100%
+        for k in motor_power:
+            motor_power[k] = round(min(100, motor_power[k]), 2)
+
+        self.motor_powers = motor_power
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    try:
+        motor_subscriber = MotorSubscriber()
+
+        app = QApplication(sys.argv)
+        gui = DistanceGUI(motor_subscriber)
+        gui.show()
+
+        # Timer do ROS2 spin_once
+        ros_timer = QTimer()
+        ros_timer.timeout.connect(lambda: rclpy.spin_once(motor_subscriber, timeout_sec=0.01))
+        ros_timer.start(10)
+
+        app.exec()
+
+    finally:
+        motor_subscriber.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
