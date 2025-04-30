@@ -184,6 +184,17 @@ class DistanceGUI(QWidget):
                     strength = max(0.0, 100 - distance)
                     motor_power[motor_dir] += weight * strength
 
+        # kompensujemy siłę przeciwstawnych silników
+        opposite_pairs = [(0, 180), (90, 270)]
+        for a, b in opposite_pairs:
+            if motor_power[a] > motor_power[b]:
+                motor_power[b] = max(0.0, motor_power[b] - motor_power[a])
+            elif motor_power[b] > motor_power[a]:
+                motor_power[a] = max(0.0, motor_power[a] - motor_power[b])
+            else:
+                motor_power[a] = 0.0
+                motor_power[b] = 0.0
+
         # Ogranicz do 100%
         for k in motor_power:
             motor_power[k] = round(min(100, motor_power[k]), 2)
