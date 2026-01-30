@@ -7,31 +7,41 @@ def generate_launch_description():
         Node(
             package='ds_sensors',
             executable='talker',
-            name='sensor_right',
+            name='sensor_front_left',
             output='screen',
             emulate_tty=True,
             parameters=[
-                {'direction_parameter': 30, 'gpio_trigger_parameter': 15, 'gpio_echo_parameter': 11}
+                {'direction_parameter': 315, 'gpio_trigger_parameter': 16, 'gpio_echo_parameter': 12}
             ]
         ),
         Node(
             package='ds_sensors',
             executable='talker',
-            name='sensor_left',
+            name='sensor_front_right',
             output='screen',
             emulate_tty=True,
             parameters=[
-                {'direction_parameter': 150, 'gpio_trigger_parameter': 16, 'gpio_echo_parameter': 12}
+                {'direction_parameter': 225, 'gpio_trigger_parameter': 32, 'gpio_echo_parameter': 31}
             ]
         ),
         Node(
             package='ds_sensors',
             executable='talker',
-            name='sensor_back',
+            name='sensor_back_left',
             output='screen',
             emulate_tty=True,
             parameters=[
-                {'direction_parameter': 300, 'gpio_trigger_parameter': 32, 'gpio_echo_parameter': 31}
+                {'direction_parameter': 45, 'gpio_trigger_parameter': 36, 'gpio_echo_parameter': 35}
+            ]
+        ),
+        Node(
+            package='ds_sensors',
+            executable='talker',
+            name='sensor_back_right',
+            output='screen',
+            emulate_tty=True,
+            parameters=[
+                {'direction_parameter': 135, 'gpio_trigger_parameter': 15, 'gpio_echo_parameter': 11}
             ]
         )
     ])

@@ -2,16 +2,19 @@ import sys
 import math
 import rclpy
 from rclpy.node import Node
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QWidget, QPushButton
 from PyQt6.QtGui import QPainter, QColor, QPen
 from PyQt6.QtCore import QTimer, Qt
 from distance_msg.msg import Distance
+from std_msgs.msg import Int32MultiArray
+from std_srvs.srv import SetBool
 
 
 class MotorSubscriber(Node):
     def __init__(self):
         super().__init__('motor_subscriber')
         self.readings = {}
+        self.is_armed = False
 
         # tworzymy subscriber czytający temat 'distance_sensors'
         self.subscription = self.create_subscription(
@@ -21,10 +24,43 @@ class MotorSubscriber(Node):
             10)
         self.subscription
 
+        # tworzymy publisher ustawień silników
+        self.motor_publisher = self.create_publisher(Int32MultiArray, 'motor_commands', 10)
+
+        # tworzymy klient serwisu do uzbrajania
+        self.arm_client = self.create_client(SetBool, 'arm_robot')
+
+    def publish_motor_commands(self, long_p, lat_p):
+        msg = Int32MultiArray()
+        msg.data = [int(long_p), int(lat_p)]
+        self.motor_publisher.publish(msg)
+
     def listener_callback(self, msg):
         # odczytujemy dane z czujnika
         self.readings[int(msg.direction)] = msg.distance
-        #self.get_logger().info('Azymut: "%s", Odleglosc: "%s"' % (msg.direction, msg.distance))
+
+    # metoda wysyłająca żądanie do serwisu
+    def send_arm_request(self, state: bool):
+        # sprawdzamy czy serwis jest dostępny
+        if not self.arm_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('Serwis arm_robot niedostępny!')
+            return
+
+        req = SetBool.Request()
+        req.data = state
+
+        future = self.arm_client.call_async(req)
+        future.add_done_callback(self.arm_response_callback)
+
+    # metoda przetwarzająca zwrotkę z serwisu
+    def arm_response_callback(self, future):
+        try:
+            response = future.result()
+            self.is_armed = response.success
+            self.get_logger().info(f'Zmiana stanu: {response.message}')
+        except Exception as e:
+            self.get_logger().error(f'Błąd wywołania serwisu: {e}')
+
 
 class DistanceGUI(QWidget):
     def __init__(self, ros_node):
@@ -34,15 +70,53 @@ class DistanceGUI(QWidget):
         self.ros_node = ros_node
         self.motor_powers = {0: 0, 90: 0, 180: 0, 270: 0}
 
+        # Przycisk uzbrajania
+        self.arm_button = QPushButton("UZBRÓJ (ARM)", self)
+        # Ustawiamy przycisk w prawym górnym rogu
+        self.arm_button.setGeometry(self.width() - 180, 20, 150, 40)
+        self.arm_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+        self.arm_button.clicked.connect(self.toggle_arm)
+
         # Timer do odświeżania GUI
         self.timer = QTimer()
-        self.timer.timeout.connect(self.update)
+        self.timer.timeout.connect(self.update_gui)
         self.timer.start(100)
+
+    # obsługa przycisku
+    def toggle_arm(self):
+        # Odwracamy żądany stan
+        new_state = not self.ros_node.is_armed
+
+        # Wysyłamy żądanie do ROS
+        self.ros_node.send_arm_request(new_state)
+
+        # Aktualizujemy wygląd przycisku
+        if new_state:
+            self.arm_button.setText("ROZBRÓJ (DISARM)")
+            self.arm_button.setStyleSheet("background-color: green; color: white; font-weight: bold;")
+        else:
+            self.arm_button.setText("UZBRÓJ (ARM)")
+            self.arm_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+
+    def update_gui(self):
+        # Aktualizacja pozycji przycisku przy skalowaniu okna
+        self.arm_button.move(self.width() - 180, 20)
+
+        # Synchronizacja stanu przycisku z faktycznym stanem w Node
+        # (na wypadek gdyby serwis odrzucił żądanie lub zmienił je ktoś inny)
+        if self.ros_node.is_armed:
+            self.arm_button.setText("ROZBRÓJ (DISARM)")
+            self.arm_button.setStyleSheet("background-color: green; color: white; font-weight: bold;")
+        else:
+            self.arm_button.setText("UZBRÓJ (ARM)")
+            self.arm_button.setStyleSheet("background-color: red; color: white; font-weight: bold;")
+
+        self.update()  # Wywołuje paintEvent
 
     def paintEvent(self, event):
         # obliczamy moc silników
         self.calculate_motor_powers()
-        
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -52,16 +126,20 @@ class DistanceGUI(QWidget):
         center_y = height // 2
         scale = 2  # 1 cm = 2 px
 
+        # Rysujemy tło (dla lepszego kontrastu przycisku, opcjonalne)
+        painter.fillRect(self.rect(), QColor("#2b2b2b"))
+
         # Rysujemy pojazd jako prostokąt
         painter.setBrush(QColor("gray"))
+        painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRect(center_x - 10, center_y - 20, 20, 40)
 
         # Silniki – azymuty: 0 (prawo), 90 (góra), 180 (lewo), 270 (dół)
         motor_positions = {
-            0:   (center_x + 25, center_y),
-            90:    (center_x, center_y - 35),
-            180:  (center_x - 25, center_y),
-            270:  (center_x, center_y + 35),
+            0: (center_x + 25, center_y),
+            90: (center_x, center_y - 35),
+            180: (center_x - 25, center_y),
+            270: (center_x, center_y + 35),
         }
 
         motor_radius = 10
@@ -101,8 +179,8 @@ class DistanceGUI(QWidget):
         pen.setWidth(2)
         painter.setPen(pen)
 
-        self.obstacle_threshold_critical = 50 # w cm
-        self.obstacle_threshold = 100 # w cm
+        self.obstacle_threshold_critical = 50  # w cm
+        self.obstacle_threshold = 100  # w cm
 
         for direction, distance in self.ros_node.readings.items():
             angle_rad = math.radians(direction)
@@ -188,8 +266,8 @@ class DistanceGUI(QWidget):
         opposite_pairs = [(0, 180), (90, 270)]
         for a, b in opposite_pairs:
             if motor_power[a] < motor_power[b]:
-                motor_power[a] = 0.0
                 motor_power[b] = max(0.0, motor_power[b] - motor_power[a])
+                motor_power[a] = 0.0
             elif motor_power[b] < motor_power[a]:
                 motor_power[a] = max(0.0, motor_power[a] - motor_power[b])
                 motor_power[b] = 0.0
@@ -197,11 +275,26 @@ class DistanceGUI(QWidget):
                 motor_power[a] = 0.0
                 motor_power[b] = 0.0
 
+        force_lateral = 0
+        force_longitudinal = 0
+
         # Ogranicz do 100%
         for k in motor_power:
             motor_power[k] = round(min(100, motor_power[k]), 2)
+            if motor_power[k] > 0:
+                if k == 0:
+                    force_lateral = 0 - motor_power[k]
+                elif k == 180:
+                    force_lateral = motor_power[k]
+                elif k == 90:
+                    force_longitudinal = 0 - motor_power[k]
+                elif k == 270:
+                    force_longitudinal = motor_power[k]
 
         self.motor_powers = motor_power
+
+        # Format: [Silnik_Główny, Silnik_Boczny]
+        self.ros_node.publish_motor_commands(force_longitudinal, force_lateral)
 
 
 def main(args=None):
